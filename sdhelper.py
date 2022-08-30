@@ -101,7 +101,7 @@ class SDModel:
                         "seed": seed,
                         "guidance_scale": guidance_scale,
                         "inference_steps": inference_steps,
-                        "output_solution": output_resolution,
+                        "output_resolution": output_resolution,
                     },
                     model_type=self.model_type(),
                     model_params=self.model_parameters(),
