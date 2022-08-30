@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from io import BytesIO
 from typing import Any, Dict, List
 
+import pandas as pd
 import torch
 from diffusers import StableDiffusionPipeline, LMSDiscreteScheduler
 from IPython.display import HTML
@@ -63,6 +64,46 @@ class Result:
 
         # TODO print ascii schema with more infos?
         return grid
+
+    def to_pandas(self):
+        # collect all params, model params
+        params = set()
+        model_params = set()
+        for item in self.items:
+            params.update(item.params.keys())
+            model_params.update(item.model_params.keys())
+
+        columns = [
+            "output",
+            "input.txt",
+            "input.img",
+            "model_type",
+        ]
+
+        columns.extend([f"model_param.{model_param}" for model_param in model_params])
+        columns.extend([f"param.{param}" for param in params])
+
+        elements = []
+        for item in self.items:
+            element = [
+                item.output[0] if len(item.output) == 1 else item.output,
+                item.inputs["txt_prompt"],
+                item.inputs["img_prompt"],
+                item.model_type,
+            ]
+            for model_param in model_params:
+                element.append(
+                    item.model_params[model_param]
+                    if model_param in item.model_params
+                    else None,
+                )
+            for param in params:
+                element.append(
+                    item.params[param] if param in item.params else None,
+                )
+            elements.append(element)
+
+        return pd.DataFrame(elements, columns=columns)
 
     def merge_with(self, other):
         res = Result([], {})
