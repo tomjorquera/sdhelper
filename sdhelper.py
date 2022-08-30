@@ -65,7 +65,10 @@ class Result:
         return grid
 
     def merge_with(self, other):
-        self.items.extend(other.items)
+        res = Result([], {})
+        res.items.extend(self.items)
+        res.items.extend(other.items)
+        return res
 
 
 class SDModel:
@@ -137,7 +140,7 @@ class SDModel:
             if results is None:
                 results = result
             else:
-                results.merge_with(result)
+                results = results.merge_with(result)
 
         results.meta["grid_hint"] = {
             "rows": math.floor(math.sqrt(nb_images)),
@@ -168,7 +171,7 @@ class SDModel:
                 if results is None:
                     results = result
                 else:
-                    results.merge_with(result)
+                    results = results.merge_with(result)
 
         results.meta[
             "grid_hint"
@@ -203,7 +206,7 @@ class SDModel:
             if results is None:
                 results = result
             else:
-                results.merge_with(result)
+                results = results.merge_with(result)
 
         rows = len(prompt_variants[list(prompt_variants)[0]])
         results.meta[
