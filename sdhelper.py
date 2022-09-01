@@ -1,8 +1,11 @@
-import math
 import base64
+import hashlib
 import itertools
+import math
 from dataclasses import dataclass
+from datetime import datetime
 from io import BytesIO
+from pathlib import Path
 from typing import Any, Dict, List
 
 import pandas as pd
@@ -16,7 +19,7 @@ from torch import autocast
 @dataclass
 class ResultItem:
     inputs: Any
-    output: List[Any]
+    outputs: List[Any]
     params: Dict[str, Any]
     model_type: str
     model_params: Dict[str, Any]
@@ -33,10 +36,8 @@ class Result:
         img_str = base64.b64encode(buffered.getvalue()).decode()
         return ("""<img src="data:image/png;base64,{0}" />""").format(img_str)
 
-        return self.to_img_grid()
-
     def to_img_grid(self, rows=None, cols=None):
-        imgs = [img for item in self.items for img in item.output]
+        imgs = [img for item in self.items for img in item.outputs["img"]]
         nb_images = len(imgs)
 
         # set grid hint for missing #rows/#cols values if any
@@ -74,9 +75,9 @@ class Result:
             model_params.update(item.model_params.keys())
 
         columns = [
-            "output",
-            "input.txt",
-            "input.img",
+            "outputs_img",
+            "inputs_txt",
+            "inputs_img",
             "model_type",
         ]
 
@@ -86,9 +87,11 @@ class Result:
         elements = []
         for item in self.items:
             element = [
-                item.output[0] if len(item.output) == 1 else item.output,
-                item.inputs["txt_prompt"],
-                item.inputs["img_prompt"],
+                item.outputs["img"][0]
+                if len(item.outputs["img"]) == 1
+                else item.outputs["img"],
+                item.inputs["txt"],
+                item.inputs["img"],
                 item.model_type,
             ]
             for model_param in model_params:
@@ -104,6 +107,60 @@ class Result:
             elements.append(element)
 
         return pd.DataFrame(elements, columns=columns)
+
+    def save(self, output_dir):
+        data = self.to_pandas()
+
+        output_path = Path(f"{output_dir}_{datetime.now().isoformat()}")
+        info_path = output_path / "info"
+
+        output_path.mkdir(parents=True, exist_ok=True)
+        info_path.mkdir(parents=True, exist_ok=True)
+
+        def img_to_digest(img):
+            if img is None:
+                return
+            md5hash = hashlib.md5(img.tobytes())
+            return md5hash.hexdigest()
+
+        seen_imgs = {}
+
+        input_imgs_col = []
+        output_imgs_col = []
+
+        for item in data.itertuples():
+            # export input and output images
+            if item.inputs_img:
+                input_img = item.inputs_img
+                img_hash = img_to_digest(input_img)
+                if img_hash not in seen_imgs:
+                    seen_imgs[img_hash] = f"image{len(seen_imgs)}.png"
+                    input_img.save(info_path / seen_imgs[img_hash])
+                input_imgs_col.append(info_path / seen_imgs[img_hash])
+            else:
+                input_imgs_col.append(None)
+
+            if item.outputs_img:
+                output_imgs = item.outputs_img
+                output_names = []
+                if not isinstance(output_imgs, list):
+                    output_imgs = [output_imgs]
+                for i, output_img in enumerate(output_imgs):
+                    output_name = f"output_{item.Index}_{i}.png"
+                    output_names.append(output_name)
+                    output_img.save(output_path / output_name)
+                if len(output_names) == 1:
+                    output_names = output_names[0]
+                output_imgs_col.append(output_names)
+            else:
+                output_imgs_col.append([])
+
+        # replace images with references to the files
+        data["inputs_img"] = input_imgs_col
+        data["outputs_img"] = output_imgs_col
+
+        # That's all folks
+        data.to_csv(info_path / "data.csv")
 
     def merge_with(self, other):
         res = Result([], {})
@@ -133,10 +190,10 @@ class SDModel:
         return Result(
             [
                 ResultItem(
-                    output=res,
+                    outputs={"img": self._img_result_from_output(res)},
                     inputs={
-                        "txt_prompt": self._txt_prompt_from_input(model_input),
-                        "img_prompt": self._img_prompt_from_input(model_input),
+                        "txt": self._txt_prompt_from_input(model_input),
+                        "img": self._img_prompt_from_input(model_input),
                     },
                     params={
                         "seed": seed,
@@ -155,6 +212,9 @@ class SDModel:
         return None
 
     def _img_prompt_from_input(self, model_input):
+        return None
+
+    def _img_result_from_output(self, model_output):
         return None
 
     def explore(
@@ -282,6 +342,9 @@ class HFDiffuser(SDModel):
 
     def _txt_prompt_from_input(self, model_input):
         return model_input
+
+    def _img_result_from_output(self, model_output):
+        return model_output
 
     def _eval(
         self, model_input, seed, guidance_scale, inference_steps, output_resolution=512
