@@ -1,23 +1,33 @@
+"""
+Helper library to experiment with Image generation models, preferably in notebooks.
+"""
 import base64
 import hashlib
 import itertools
 import math
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
 import torch
-from diffusers import StableDiffusionPipeline, LMSDiscreteScheduler
-from IPython.display import HTML
+from diffusers import StableDiffusionPipeline
 from PIL import Image
+from PIL.Image import Image as ImageObject
 from torch import autocast
 
 
 @dataclass
 class ResultItem:
+    """An item among several produced by the evaluation of a model.
+
+    ResultItem contains some outputs, but also all the inputs and parameters required to produce them.
+    Depending on the model and how it was called, outputs can be things such as an image, multiple images, or more complex objects.
+    """
+
     inputs: Any
     outputs: List[Any]
     params: Dict[str, Any]
@@ -26,7 +36,14 @@ class ResultItem:
 
 
 class Result:
-    def __init__(self, results, meta):
+    """Result produced by evaluation of a model.
+
+    A Result is an object containing some `sdhelper.ResultItem`, as well as useful metadata.
+
+    The internals of a Result are *not* considered stable. To interact with it, use one of its methods (such as `to_pandas`).
+    """
+
+    def __init__(self, results: Dict[str, Any], meta: Dict[str, Any]) -> None:
         self.items = results
         self.meta = meta
 
@@ -36,7 +53,23 @@ class Result:
         img_str = base64.b64encode(buffered.getvalue()).decode()
         return ("""<img src="data:image/png;base64,{0}" />""").format(img_str)
 
-    def to_img_grid(self, rows=None, cols=None):
+    def to_img_grid(
+        self, rows: Optional[int] = None, cols: Optional[int] = None
+    ) -> ImageObject:
+        """Convert to a image grid.
+
+        If rows or columns are not specified, will try to use hints from metadata, or good defaults.
+        Note: this method is the method used for the html representation in jupyter notebooks.
+
+        Args:
+          rows:
+            number of rows for the image grid (optional).
+          cols:
+            number of columns for the image grid (optional).
+
+        Returns:
+          An image grid composed of the Result images.
+        """
         imgs = [img for item in self.items for img in item.outputs["img"]]
         nb_images = len(imgs)
 
@@ -66,7 +99,13 @@ class Result:
         # TODO print ascii schema with more infos?
         return grid
 
-    def to_pandas(self):
+    def to_pandas(self) -> pd.DataFrame:
+        """Convert to a pandas dataframe.
+
+        Returns:
+          A `pandas.DataFrame` representation of the result.
+
+        """
         # collect all params, model params
         params = set()
         model_params = set()
@@ -108,7 +147,12 @@ class Result:
 
         return pd.DataFrame(elements, columns=columns)
 
-    def save(self, output_dir):
+    def save(self, output_dir: str) -> None:
+        """Save the Result to a directory.
+
+        Args:
+          output_dir: the path of directory where to save the result.
+        """
         data = self.to_pandas()
 
         output_path = Path(f"{output_dir}_{datetime.now().isoformat()}")
@@ -117,9 +161,9 @@ class Result:
         output_path.mkdir(parents=True, exist_ok=True)
         info_path.mkdir(parents=True, exist_ok=True)
 
-        def img_to_digest(img):
+        def img_to_digest(img: ImageObject) -> Optional[str]:
             if img is None:
-                return
+                return None
             md5hash = hashlib.md5(img.tobytes())
             return md5hash.hexdigest()
 
@@ -162,28 +206,107 @@ class Result:
         # That's all folks
         data.to_csv(info_path / "data.csv")
 
-    def merge_with(self, other):
+    def merge_with(self, other: "Result") -> "Result":
+        """Create a new Result combining this one and another.
+
+        Create a new Result containing `sdhelper.ResultItem` from both sources.
+
+        The original Results are not modified.
+
+        This does not copy the metadata of either source.
+
+        Args:
+          other:
+            the other Result to combine with.
+        """
         res = Result([], {})
         res.items.extend(self.items)
         res.items.extend(other.items)
         return res
 
 
-class SDModel:
-    def model_type(self):
+class SDModel(ABC):
+    """Base class to implement a new model."""
+
+    @abstractmethod
+    def model_type(self) -> str:
+        """String representation of the model type.
+
+        This method should be overridden depending on the actual model result.
+
+        Returns:
+          a string representation of the model type.
+        """
         pass
 
-    def model_parameters(self):
+    @abstractmethod
+    def model_parameters(self) -> Dict[str, Any]:
+        """Parameters names and values of the model.
+
+        This method should be overridden depending on the actual model result.
+
+        Returns:
+          A Dict containing the parameters names and values of the model.
+        """
         pass
 
+    @abstractmethod
     def _eval(
-        self, model_input, seed, guidance_scale, inference_steps, output_resolution=512
-    ):
+        self,
+        model_input: Any,
+        seed: int,
+        guidance_scale: float,
+        inference_steps: int,
+        output_resolution: int = 512,
+    ) -> Any:
+        """Internal method to evaluate the model.
+
+        This method should be overridden depending on the actual model result.
+
+        This method should *not* be called directly. Use the `evaluate` method instead.
+
+        Args:
+          model_input:
+            the inputs to give for the model evaluation.
+          seed:
+            the seed for randomization.
+          guidance_scale:
+            guidance scale parameter value.
+          inference_steps:
+            number of inference steps to run.
+          output_resolution:
+            resolution of the output (default: 512).
+
+        Returns:
+          some model output.
+        """
         pass
 
     def evaluate(
-        self, model_input, seed, guidance_scale, inference_steps, output_resolution=512
-    ):
+        self,
+        model_input: Any,
+        seed: int,
+        guidance_scale: float,
+        inference_steps: int,
+        output_resolution: int = 512,
+    ) -> Result:
+        """Model evaluation.
+
+        Args:
+          model_input:
+            the inputs to give for the model evaluation.
+          seed:
+            the seed for randomization.
+          guidance_scale:
+            guidance scale parameter value.
+          inference_steps:
+            number of inference steps to run.
+          output_resolution:
+            resolution of the output (default: 512).
+
+        Returns:
+          A `sdhelper.Result` object
+        """
         res = self._eval(
             model_input, seed, guidance_scale, inference_steps, output_resolution
         )
@@ -208,24 +331,73 @@ class SDModel:
             meta={},
         )
 
-    def _txt_prompt_from_input(self, model_input):
+    def _txt_prompt_from_input(self, model_input: Any) -> Optional[str]:
+        """Get the text prompt part of the input (if any).
+
+        This method should be overridden depending on the actual model result.
+
+        Args:
+          the raw model inputs
+
+        Returns:
+          the text prompt part of the model input (if any).
+        """
         return None
 
-    def _img_prompt_from_input(self, model_input):
+    def _img_prompt_from_input(self, model_input: Any) -> Optional[ImageObject]:
+        """Get the image prompt part of the input (if any).
+
+        This method should be overridden depending on the actual model result.
+
+        Args:
+          the raw model inputs
+
+        Returns:
+          the image prompt part of the model input (if any).
+        """
         return None
 
-    def _img_result_from_output(self, model_output):
+    def _img_result_from_output(self, model_output: Any) -> Optional[List[ImageObject]]:
+        """Get the generated image part of the output (if any).
+
+        This method should be overridden depending on the actual model result.
+
+        Args:
+          the raw model outputs
+
+        Returns:
+          the generated images part of the model outputs (if any).
+        """
         return None
 
     def explore(
         self,
-        model_input,
-        nb_images=16,
-        starting_seed=0,
-        guidance_scale=4,
-        inference_steps=20,
-        output_resolution=512,
-    ):
+        model_input: Any,
+        nb_images: int = 16,
+        starting_seed: int = 0,
+        guidance_scale: float = 4,
+        inference_steps: int = 20,
+        output_resolution: int = 512,
+    ) -> Result:
+        """Run multiple evaluations of the same input with varying seeds.
+
+        Args:
+          model_input:
+            the inputs to give for the model evaluation.
+          nb_images:
+            number of images to generate.
+          starting_seed:
+            initial seed to use (default: 0).
+          guidance_scale:
+            guidance scale parameter value>
+          inference_steps:
+            number of inference steps to run.
+          output_resolution:
+            resolution of the output (default: 512).
+
+        Returns:
+          A `sdhelper.Result` object containing generated images for all seeds.
+        """
         results = None
         for i in range(nb_images):
             seed = (
@@ -251,11 +423,26 @@ class SDModel:
 
     def exploit(
         self,
-        model_input,
-        seed,
-        starting_steps=20,
-        output_resolution=512,
-    ):
+        model_input: Any,
+        seed: int,
+        starting_steps: int = 20,
+        output_resolution: int = 512,
+    ) -> Result:
+        """Run multiple evaluations of the same input with varying inference steps and guidance scale.
+
+        Args:
+          model_input:
+            the inputs to give for the model evaluation.
+          seed:
+            seed to use.
+          starting_steps:
+            number of inference steps to start with (default: 20).
+          output_resolution:
+            resolution of the output (default: 512).
+
+        Returns:
+          A `sdhelper.Result` object containing generated images for all seeds.
+        """
         results = None
         # TODO make inference increments and guidance scale parameters
         for inference_steps in range(
@@ -284,13 +471,39 @@ class SDModel:
 
     def combine(
         self,
-        model_input,
-        prompt_variants,
-        inference_steps=20,
-        seed=0,
-        guidance_scale=7,
-        resolution=512,
-    ):
+        model_input: Any,
+        prompt_variants: Dict[str, List[str]],
+        inference_steps: int = 20,
+        seed: int = 0,
+        guidance_scale: float = 7,
+        output_resolution: int = 512,
+    ) -> Result:
+        """Run the model on a combination of multiple prompts.
+
+        This method allows to easily test variations of outputs, by operating string replacement
+        on a base prompt.
+
+        TODO example
+
+        Note: this is a simple string replacement, so be careful about the replacement keys you use.
+
+        Args:
+          model_input:
+            the inputs to give for the model evaluation.
+          prompt_variants:
+            The dict of the values to replace and replacements.
+          inference_steps:
+            number of inference steps to run (default: 20).
+          seed:
+            seed to use (default: 0).
+          guidance_scale:
+            the guidance scale to use (default: 7).
+          output_resolution:
+            resolution of the output (default: 512).
+
+        Returns:
+          A `sdhelper.Result` object containing generated images for all combinations.
+        """
         prompt_base = self._txt_prompt_from_input(model_input)
         keys_combinaisons = [
             [[k, v] for v in prompt_variants[k]] for k in prompt_variants
@@ -320,7 +533,25 @@ class SDModel:
 
 
 class HFDiffuser(SDModel):
-    def __init__(self, token, version="1-4", allow_nsfw=False):
+    """SDModel implementation for HuggingFace model."""
+
+    def __init__(
+        self, token: str, version: str = "1-4", allow_nsfw: bool = False
+    ) -> None:
+        """
+        Instanciate a new model using weights from HuggingFace.
+
+        Note: you still need to register and accept HuggingFace use conditions.
+
+        Args:
+          token:
+            your HuggingFace token.
+          version:
+            the exact model version to use (default: 1-4).
+          allow_nsfw:
+            allow NSFW images or not (default: false).
+
+        """
         self.version = version
         self.allow_nsfw = allow_nsfw
 
@@ -334,16 +565,18 @@ class HFDiffuser(SDModel):
         if allow_nsfw:
             self.pipe.safety_checker = lambda images, **kwargs: (images, False)
 
-    def model_type(self):
+    def model_type(self) -> str:
         return "HHFDiffuser"
 
-    def model_parameters(self):
+    def model_parameters(self) -> Dict[str, Any]:
         return {"version": self.version, "allow_nsfw": self.allow_nsfw}
 
-    def _txt_prompt_from_input(self, model_input):
+    def _txt_prompt_from_input(self, model_input: str) -> str:
         return model_input
 
-    def _img_result_from_output(self, model_output):
+    def _img_result_from_output(
+        self, model_output: List[ImageObject]
+    ) -> List[ImageObject]:
         return model_output
 
     def _eval(
